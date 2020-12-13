@@ -8,6 +8,7 @@
 #include "AppleMidi.h"
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
+#include <ButtonDebounce.h>
 
 wl_status_t wl_status;
 ESP8266WiFiMulti WiFiMulti;
@@ -26,10 +27,20 @@ long lastQuarterSecond = 0;
 long lastSecond = 0;
 int sendValue = 0;
 int sendValue2 = 0;
+int diff1 = 0;
+int diff2 = 0;
+int opMode = 0;
 const char * hostname = "inflatable";
+
+boolean routeputConnected = false;
+boolean routeputPacketReady = false;
+String routeputPacket;
 
 const int ledMaxPIN = 2;
 const int toyControlPIN = 12;
+const int modeSelectPIN = 14;
+
+ButtonDebounce modeButton(modeSelectPIN, 50);
 
 int lowerPowerLevel = 200;
 int upperPowerLevel = 768;
@@ -53,6 +64,16 @@ float average(float * array, int len)
   return sum / len ;
 }
 
+void onModeButton(int state)
+{
+  if (state == LOW)
+  {
+    opMode++;
+    if (opMode >= 2)
+      opMode = 0;
+  }
+}
+
 void everyQuarterSecond()
 {
   // Deplete sendValue accordingly
@@ -64,8 +85,8 @@ void everyQuarterSecond()
   // Find the average of the last 100 samples
   pressure_hPa_avg = (int) average(pressureArray, 100);
 
-  int diff1 = abs( (pressure_hPa_avg - ((int) pressure_hPa)) * 0.65);
-  int diff2 = abs( (pressure_hPa_avg - ((int) pressure_hPa)) * 0.75);
+  diff1 = abs( (pressure_hPa_avg - ((int) pressure_hPa)) * 0.65);
+  diff2 = abs( (pressure_hPa_avg - ((int) pressure_hPa)) * 0.75);
 
   // Diffs are to large its likely a sensor glych
   if (diff1 > 20) diff1 = 20;
@@ -79,17 +100,31 @@ void everyQuarterSecond()
   if (sendValue > 127) sendValue = 127;
   if (sendValue2 > 127) sendValue2 = 127;
 
-  if (triggerValue == 0)
+  if (opMode == 0)
   {
-    analogWrite(toyControlPIN, map(powerLevel, 0, 127, 0, 768));
-  } else if (sendValue > triggerValue) {
-    digitalWrite(ledMaxPIN, HIGH);
-    analogWrite(toyControlPIN, 0);
-  } else {
-    digitalWrite(ledMaxPIN, LOW);
-    analogWrite(toyControlPIN, map(sendValue, 127, 0, lowerPowerLevel, upperPowerLevel));
+    // More movement = less vibration
+    if (triggerValue == 0)
+    {
+      analogWrite(toyControlPIN, map(powerLevel, 0, 127, 0, 768));
+    } else if (sendValue > triggerValue) {
+      digitalWrite(ledMaxPIN, HIGH);
+      analogWrite(toyControlPIN, 0);
+    } else {
+      digitalWrite(ledMaxPIN, LOW);
+      analogWrite(toyControlPIN, map(sendValue, 127, 0, lowerPowerLevel, upperPowerLevel));
+    }
+  } else if (opMode == 1) {
+    // Fast and responsive to any change
+    if (diff2 > 5)
+    {
+      digitalWrite(ledMaxPIN, HIGH);
+      analogWrite(toyControlPIN, map(diff2, 0, 20, lowerPowerLevel, upperPowerLevel));
+    } else {
+      analogWrite(toyControlPIN, 0);
+      digitalWrite(ledMaxPIN, LOW);
+    }
   }
-
+  
   //Serial.println(sendValue);
   // Send off to midi channels
   AppleMIDI.sendControlChange(20, sendValue, (byte)11);
@@ -109,6 +144,9 @@ void sendDataToRouteput()
   jsonBuffer["hPaAverage"] = pressure_hPa_avg;
   jsonBuffer["arousalA"] = sendValue;
   jsonBuffer["arousalB"] = sendValue2;
+  jsonBuffer["diffA"] = diff1;
+  jsonBuffer["diffB"] = diff2;
+  jsonBuffer["mode"] = opMode;
   serializeJson(jsonBuffer, out);
   webSocket.sendTXT(out);
 }
@@ -118,6 +156,8 @@ void setup()
   Serial.begin(115200);
   pinMode(ledMaxPIN, OUTPUT);
   pinMode(toyControlPIN, OUTPUT);
+  pinMode(modeSelectPIN, INPUT_PULLUP);
+  modeButton.setCallback(onModeButton);
   digitalWrite(toyControlPIN, LOW);
   if (! mpr.begin()) {
     Serial.println("Failed to communicate with MPRLS sensor, check wiring?");
@@ -164,11 +204,36 @@ void OnAppleMidiControlChange(byte channel, byte number, byte value)
   }
 }
 
-void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
-
+void webSocketEvent(WStype_t type, uint8_t * payload, size_t length)
+{
+  char* data = (char *) payload;
+  int dataSize = 0;
+  switch(type) {
+    case WStype_DISCONNECTED:
+      routeputConnected = false;
+      break;
+    case WStype_CONNECTED:
+      webSocket.sendTXT("{\"__routeput\": {\"channel\":\"inflatable\", \"setChannelProperty\": {\"plotFields\":\"plotFields\"}}, \"plotFields\": [\"arousalA\", \"arousalB\", \"diffA\", \"diffB\"]}");
+      routeputConnected = true;
+      break;
+    case WStype_TEXT:
+      dataSize = strlen(data);
+      routeputPacket = String(data);
+      routeputPacketReady = true;
+      break;
+    case WStype_ERROR:
+      break;
+    case WStype_BIN:
+    case WStype_FRAGMENT_TEXT_START:
+    case WStype_FRAGMENT_BIN_START:
+    case WStype_FRAGMENT:
+    case WStype_FRAGMENT_FIN:
+      break;
+  }
 }
 
 void loop() {
+  modeButton.update();
   pressure_hPa = mpr.readPressure();
   while (pressure_hPa < 1000)
   {

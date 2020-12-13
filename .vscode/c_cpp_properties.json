@@ -1,0 +1,18 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "D:\\Dropbox\\Projects\\arduino\\sketchbook\\tools\\**",
+                "D:\\Dropbox\\Projects\\arduino\\sketchbook\\hardware\\esp8266com\\esp8266\\**",
+                "D:\\Dropbox\\Projects\\arduino\\sketchbook\\libraries\\**"
+            ],
+            "forcedInclude": [],
+            "intelliSenseMode": "msvc-x64",
+            "compilerPath": "C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/VC/Tools/MSVC/14.26.28801/bin/Hostx64/x64/cl.exe",
+            "cStandard": "c11",
+            "cppStandard": "c++17"
+        }
+    ],
+    "version": 4
+}
